@@ -1,0 +1,619 @@
+local UEHelpers = require("UEHelpers")
+
+local selectedObject = nil
+local selectedYaw = 0
+
+-- save to the game save directory, e.g. %LOCALAPPDATA%/Supraworld/SpawnThings.txt
+
+local function getSavePath()
+    local gameName = UEHelpers.GetKismetSystemLibrary():GetGameName():ToString()
+    local basePath = os.getenv("LOCALAPPDATA") or (os.getenv("HOME") .. "/.local/share")
+    return basePath .. "/" .. gameName .. "/SpawnThings.txt"
+end
+
+-- Unified log of all actions
+local actions = {}
+
+local nameIndex = 0
+local function getNextName()
+    nameIndex = nameIndex + 1
+    return string.format('SpawnedThings_%04d', nameIndex)
+end
+
+-- ==============================================================
+-- Utility
+-- ==============================================================
+
+local function serializeTransform(loc, rot, scale)
+    return string.format("%f,%f,%f;%f,%f,%f;%f,%f,%f",
+        loc.X, loc.Y, loc.Z,
+        rot.Pitch, rot.Yaw, rot.Roll,
+        scale.X, scale.Y, scale.Z)
+end
+
+local function deserializeTransform(str)
+    local lx,ly,lz, p,y,r, sx,sy,sz =
+        str:match("([^,;]+),([^,;]+),([^,;]+);([^,;]+),([^,;]+),([^,;]+);([^,;]+),([^,;]+),([^,;]+)")
+    return {
+        loc   = {X=tonumber(lx), Y=tonumber(ly), Z=tonumber(lz)},
+        rot   = {Pitch=tonumber(p), Yaw=tonumber(y), Roll=tonumber(r)},
+        scale = {X=tonumber(sx), Y=tonumber(sy), Z=tonumber(sz)}
+    }
+end
+
+local function getName(actor)
+    return actor and actor:IsValid() and actor:GetFName():ToString() or "";
+end
+
+local function getAssetName(fullName)
+    local name = fullName:match("^%S+%s+(.+)")
+    return name or fullName
+end
+
+local function getClassName(fullName)
+    return fullName:match("^(%S+)")
+end
+
+local function addTag(actor, tag)
+    actor.Tags[#actor.Tags + 1] = FName(tag)
+end
+
+function getActorRotation(actor) -- UE4 doesn't seem to have it
+    local rot = {Pitch=0, Yaw=0, Roll=0}
+    -- local rot = actor.RootComponent.RelativeRotation
+    return actor.K2_GetActorRotation:IsValid() and actor:K2_GetActorRotation() or rot
+end
+
+function getActorScale(actor)
+    local scale = {X=1, Y=1, Z=1}
+    return actor.GetActorScale3D:IsValid() and actor:GetActorScale3D() or scale
+end
+
+local function getLastTag(actor)
+    if actor.Tags:IsValid() and #actor.Tags>0 then
+        return actor.Tags[#actor.Tags]:ToString()
+    end
+end
+
+local function getActorByTag(tag)
+    local world = UEHelpers.GetWorld()
+    if not world:IsValid() then return nil end
+    local actors = {}
+    UEHelpers.GetGameplayStatics():GetAllActorsWithTag(world, FName(tag), actors)
+    if actors and #actors>0 then
+        return actors[1]:Get()
+    end
+end
+
+local function getActorByName(name)
+    local actor = StaticFindObject(name)
+    if actor and actor:IsValid() then return actor end
+
+    actor = getActorByTag(name)
+    if actor and actor:IsValid() then return actor end
+
+    actor = FindObject('BlueprintGeneratedClass', name)
+    if actor and actor:IsValid() then return actor end
+
+    actor = FindObject('StaticMesh', name)
+    if actor and actor:IsValid() then return actor end
+
+    actor = FindObject(nil, name)
+    if actor and actor:IsValid() then return actor end
+
+    actor = FindObject(name, nil)
+    if actor and actor:IsValid() then return actor end
+
+    return nil
+end
+
+local function getActorName(actor, instancesOnly)
+    
+    if instancesOnly then
+        if actor.Tags:IsValid() and #actor.Tags>0 then
+            local tag = actor.Tags[#actor.Tags]:ToString()
+            if tag:find('SpawnedThings_') then
+                return tag
+            end
+        end
+        return getName(actor)
+    end
+
+    local className = getName(actor:GetClass())
+
+    if className == 'StaticMeshActor' then
+        return getName(actor:K2_GetRootComponent().StaticMesh)
+    end
+
+    return className
+end
+
+local function CloneStaticMeshActor(assetName, location, rotation, scale)
+    local world = UEHelpers.GetWorld()
+
+    local staticMeshActorClass = StaticFindObject("/Script/Engine.StaticMeshActor")
+    local staticMeshClass = StaticFindObject("/Script/Engine.StaticMesh")
+
+    local actor = CreateInvalidObject() ---@cast actor AActor
+
+    local loadedAsset = StaticFindObject(assetName)
+    if not loadedAsset:IsValid() then
+        return actor
+    end
+
+    actor = world:SpawnActor(staticMeshActorClass, location, rotation)
+
+    if not actor:IsValid() then
+        print("world:SpawnActor actor is not valid");
+    end
+
+    actor:SetActorScale3D(scale)
+    actor:SetReplicates(true)
+
+    if loadedAsset:IsA(staticMeshClass) then
+        actor:SetMobility(2)
+
+        if not actor.StaticMeshComponent:SetStaticMesh(loadedAsset) then
+            print("Failed to set ",loadedAsset:GetFullName(),"as static mesh")
+            return actor
+        end
+
+        actor.StaticMeshComponent:SetIsReplicated(true)
+    end
+
+    return actor
+
+end
+
+function spawnActor(world, actorClass, loc, rot, scale)
+    local transform = UEHelpers.GetKismetMathLibrary():MakeTransform(loc, rot, scale)
+
+    if UnrealVersion:IsBelow(5, 0) then
+        local actor = UEHelpers.GetGameplayStatics():BeginDeferredActorSpawnFromClass(world, actorClass, transform, 0, nil)
+        return UEHelpers.GetGameplayStatics():FinishSpawningActor(actor, transform)
+    else
+        local actor = UEHelpers.GetGameplayStatics():BeginDeferredActorSpawnFromClass(world, actorClass, transform, 0, nil, 0)
+        return UEHelpers.GetGameplayStatics():FinishSpawningActor(actor, transform, 0)
+    end
+end
+
+function SpawnActorFromAssetName(assetName, loc, rot, scale)
+    local invalidActor = CreateInvalidObject() ---@cast invalidActor AActor
+    if type(assetName) ~= "string" or not loc then
+        print("InvalidActor", assetName)
+        return invalidActor
+    end
+
+    local actorClass = StaticFindObject(assetName)
+    if not actorClass:IsValid() then
+        actorClass = LoadAsset(assetName)
+    end
+
+    if not actorClass:IsValid() then
+        print("SpawnActorFromClassName: Couldn't find static object:", assetName)
+        return invalidActor
+    end
+
+    local world = UEHelpers.GetWorld()
+    if not world:IsValid() then return invalidActor end
+
+    local actor = spawnActor(world, actorClass, loc, rot, scale)
+
+    if actor:IsValid() then
+        return actor
+    else
+        return CloneStaticMeshActor(assetName, loc, rot, scale)
+    end
+
+    return invalidActor
+end
+
+-- ==============================================================
+-- Unified File I/O (actions)
+-- ==============================================================
+
+local function serializeAction(action)
+    if action.type == "spawn" then
+        -- spawn|className|loc,rot,scale
+        return string.format("spawn|%s|%s", action.name, serializeTransform(action.loc, action.rot, action.scale))
+    elseif action.type == "hide" then
+        return string.format("hide|%s", action.name)
+    elseif action.type == "unhide" then
+        return string.format("unhide|%s", action.name)
+    elseif action.type == "rotate" then
+        return string.format("rotate|%s|%f", action.name, action.yaw)
+    elseif action.type == "cut" then
+        return string.format("cut|%s", action.name)
+    end
+    return ""
+end
+
+local function parseAction(line)
+    local action, obj, params = line:match("^(%w+)%|([^|]+)%|?(.*)$")
+    if not action or not obj then return nil end
+    if action == "spawn" then
+        local tf = deserializeTransform(params)
+        return {type="spawn", name=obj, loc=tf.loc, rot=tf.rot, scale=tf.scale}
+    elseif action == "hide" then
+        return {type="hide", name=obj}
+    elseif action == "unhide" then
+        return {type="unhide", name=obj}
+    elseif action == "rotate" then
+        return {type="rotate", name=obj, yaw=tonumber(params)}
+    elseif action == "cut" then
+        return {type="cut", name=obj}
+    end
+    return nil
+end
+
+local function saveActions()
+    local savePath = getSavePath()
+    print("Saving to", savePath)
+    local f = io.open(savePath, "w")
+    if not f then return end
+    for _, action in ipairs(actions) do
+        local line = serializeAction(action)
+        if line and line ~= "" then
+            f:write(line .. "\n")
+        end
+    end
+    f:close()
+end
+
+local function loadActions()
+    local savePath = getSavePath()
+    print("Loading from", savePath)
+    actions = {}
+    local f = io.open(savePath, "r")
+    if not f then return end
+    for line in f:lines() do
+        local act = parseAction(line)
+        if act then table.insert(actions, act) end
+    end
+    f:close()
+end
+
+-- ==============================================================
+-- Action Application (Replay)
+-- ==============================================================
+
+local function rotateActor(Object, yaw)
+    if Object and Object:IsValid() then
+
+        local root = Object.K2_GetRootComponent()
+        if root and root:IsValid() and root.SetMobility and root.SetMobility:IsValid() then
+            root:SetMobility(2) -- set as movable (mandatory, some blueprints don't have movable mesh)
+        end
+
+        if Object.K2_SetActorRotation and Object.K2_SetActorRotation:IsValid() then
+            local rot = Object:K2_GetActorRotation()
+            rot.Yaw = (rot.Yaw + yaw) % 360
+            Object:K2_SetActorRotation(rot, true)
+        end
+    end
+end
+
+local function applyAction(act, temporary)
+    if act.type == "spawn" then
+        local actor = getActorByName(act.name)
+        if not actor or not actor:IsValid() then return end
+
+        local assetName = getAssetName(actor:GetClass():GetFullName())
+        local className = getName(actor:GetClass())
+
+        if className == 'StaticMesh' or className == 'BlueprintGeneratedClass' then
+            assetName = getAssetName(actor:GetFullName())
+        elseif className == 'StaticMeshActor' then
+            assetName = getAssetName(actor:K2_GetRootComponent().StaticMesh:GetFullName())
+        end
+
+        actor = SpawnActorFromAssetName(assetName, act.loc, act.rot, act.scale)
+        if not actor or not actor:IsValid() then return end
+
+        local tag = nil
+        if not temporary then
+            tag = getNextName()
+            addTag(actor, tag)
+        end
+
+        print("Action", serializeAction(act), "Tag", tag, "Spawned", actor:GetFullName(), "From", assetName)
+
+        act.result = actor
+
+        if act.name=="SecretVolume_C" then
+            actor:RegisterToStatSubsystem()
+            actor:ReceiveBeginPlay()
+        end
+
+        if act.name=='PuzzleCloud_C' then
+            print("--- updating cloud ---")
+            actor:CloudAppear()
+            actor:CloudWoobleLoopEnd() -- doesn't help?
+        end
+
+        -- each question mark gets its own secret volume (temporary item)
+        if assetName == '/SupraAssets/Meshes/Objects/Stuff/Plastic_Question_Mark.Plastic_Question_Mark' then
+            ExecuteWithDelay(250, function()
+                ExecuteInGameThread(function()
+                    local act1 = {type="spawn", name='SecretVolume_C', loc=act.loc, rot=act.rot, scale={X=15, Y=15, Z=10}}
+                    applyAction(act1, true) -- comment this out to stop spawning secret volumes on each question mark
+                end)
+            end)
+        end
+
+    elseif act.type == "hide" then
+        local Object = getActorByName(act.name)
+        if Object and Object:IsValid() and Object.SetActorHiddenInGame then
+            print("Action", serializeAction(act), "Hiding", Object:GetFullName())
+            Object:SetActorHiddenInGame(true)
+            Object:SetActorEnableCollision(false)
+        end
+    elseif act.type == "unhide" then
+        local Object = getActorByName(act.name)
+        if Object and Object:IsValid() and Object.SetActorHiddenInGame then
+            print("Action", serializeAction(act), "Unhiding", Object:GetFullName())
+            Object:SetActorHiddenInGame(false)
+            Object:SetActorEnableCollision(true)
+        end
+    elseif act.type == "rotate" then
+        local Object = getActorByName(act.name)
+        if Object and Object:IsValid() then
+            print("Action", serializeAction(act), "Rotating", Object:GetFullName())
+            rotateActor(Object, act.yaw)
+        end
+    end
+end
+
+local function applyActions()
+    for _, act in ipairs(actions) do
+        applyAction(act)
+    end
+end
+
+-- ==============================================================
+-- Undo Last Action
+-- ==============================================================
+
+local function undoLastAction(skipSave)
+
+    if #actions == 0 then
+        print("No more actions to undo.")
+        return
+    end
+
+    local act = table.remove(actions)
+
+    print("Undoing last action", serializeAction(act))
+
+    if act.type == "hide" then
+        act.type = "unhide"
+        ExecuteInGameThread(function() applyAction(act) end)
+    end
+
+    if act.type == "rotate" then
+        act.yaw = -act.yaw
+        ExecuteInGameThread(function() applyAction(act) end)
+    end
+
+    if act.type == "spawn" then
+        local actor = act.result
+        if actor and actor:IsValid() then
+            print("Destroyed", actor:GetFullName())
+
+    ExecuteInGameThread(function()
+    ExecuteWithDelay(10, function()
+    ExecuteInGameThread(function()
+            actor:K2_DestroyActor()
+    end)end)end)
+
+        end
+        nameIndex = nameIndex - 1
+    end
+
+    if not skipSave then
+        saveActions()
+    end
+end
+
+-- ==============================================================
+-- Editor Operations
+-- ==============================================================
+
+local function copyObject()
+    local hitObject = getCameraHitObject()
+    if not hitObject or not hitObject:IsValid() then return end
+    selectedObject = hitObject
+    if not selectedObject:IsValid() then return end
+    print("Selected", selectedObject:GetFullName())
+    local outer = selectedObject:GetOuter()
+    print("Outer", outer:GetFullName())
+
+    local cameraYaw = getCameraController().PlayerCameraManager:GetCameraRotation().Yaw
+    return selectedObject
+end
+
+local function pasteObject()
+    if not selectedObject or not selectedObject:IsValid() then return end
+    local actor = selectedObject
+    local className = getName(actor:GetClass())
+
+    print("Pasting", className, actor:GetFullName() )
+
+    if className == 'StaticMeshComponent' or className == 'CapsuleComponent' or className == 'SkeletalMeshComponent' then
+        actor = selectedObject:GetOuter()
+        print("Using Outer Object", actor:GetFullName())
+        -- print("Outer Parent Is", actor:GetOuter():GetFullName())
+    end
+
+    local loc = getCameraImpactPoint()
+
+    local r0 = getActorRotation(actor)
+    --local r0 = {Pitch=0, Yaw=0, Roll=0}
+    local crt = getCameraController().PlayerCameraManager:GetCameraRotation()
+    local rot = {Pitch=r0.Pitch, Yaw=crt.Yaw-180, Roll=r0.Roll   }
+
+    local scale = getActorScale(actor)
+    local name = getActorName(actor)
+
+    print("Spawning", name)
+
+    local act = {type="spawn", name=name, loc=loc, rot=rot, scale=scale}
+    applyAction(act)
+    table.insert(actions, act)
+    saveActions()
+end
+
+local function cutObject()
+    local hitObject = getCameraHitObject()
+    if not hitObject or not hitObject:IsValid() then return end
+
+    selectedObject = hitObject
+
+    local actor = hitObject:GetOuter()
+    if not actor or not actor:IsValid() then return end
+
+    local name = getActorName(actor, true)
+
+    print("Hide object", name)
+
+    local act = {type="hide", name=name}
+    applyAction(act)
+
+    table.insert(actions, act)
+    saveActions()
+end
+
+local function rotateObject()
+    local hitObject = getCameraHitObject()
+    if not hitObject or not hitObject:IsValid() then return end
+
+    local actor = hitObject:GetOuter()
+    if not actor or not actor:IsValid() then return end
+
+    local name = getActorName(actor, true)
+
+    local rot = actor:K2_GetActorRotation()
+
+    local yaw = 90
+    rot.Yaw = (rot.Yaw + yaw) % 360
+
+    local act = {type="rotate", name=name, yaw=yaw}
+
+    applyAction(act)
+
+    table.insert(actions, act)
+    saveActions()
+end
+
+-- ==============================================================
+-- Load and Replay
+-- ==============================================================
+
+local function loadSaves()
+    ExecuteInGameThread(function()
+        nameIndex = 0
+        loadActions()
+        ExecuteWithDelay(250, function()
+            applyActions()
+        end)
+    end)
+end
+
+local function spawnClass(className)
+    ExecuteWithDelay(250, function()
+        ExecuteInGameThread(function()
+            local loc = getCameraImpactPoint()
+            local rot = {Pitch=0, Yaw=0, Roll=0}
+            local scale = {X=1, Y=1, Z=1}
+            SpawnActorFromClassName(className, loc, rot, scale)
+        end)
+    end)
+end
+
+local function spawnThing(alias, rot, scale, temporary)
+    local loc = getCameraImpactPoint()
+    local crt = getCameraController().PlayerCameraManager:GetCameraRotation()
+    local act = {type="spawn", name=alias, loc=loc, rot={Pitch=rot.Pitch, Yaw=crt.Yaw+rot.Yaw, Roll=rot.Roll}, scale=scale}
+    applyAction(act)
+    if not temporary then
+        table.insert(actions, act)
+        saveActions()
+    end
+end
+
+local function spawnThings()
+    -- spawnClass('/Supraworld/Levelobjects/Carriables/AluminumBall.AluminumBall_C')
+    -- spawnClass('/Supraworld/Levelobjects/Carriables/FourLeafClover.FourLeafClover_C')
+    -- spawnClass('/Supraworld/Levelobjects/Carriables/Hats/JesterHat.JesterHat_C')
+    -- spawnClass('/Supraworld/Levelobjects/Carriables/Die.Die_C')
+    -- spawnClass('/Supraworld/Levelobjects/Carriables/ButtonBattery.ButtonBattery_C')
+    -- spawnClass('/Supraworld/Abilities/SpongeSuit/ShopItem_SpongeSuit.ShopItem_SpongeSuit_C')
+    -- you can also use cheats, e.g. "summon Bush_C" in game console (uses LoadAsset internally)
+    -- UEHelpers.GetPlayerController().CheatManager['summon']('Bush_C')
+    -- UEHelpers.GetPlayerController().CheatManager.Summon('Bush_C')
+    spawnThing('Plastic_Question_Mark', {Pitch=0, Yaw=90, Roll=0}, {X=0.5, Y=0.5, Z=0.5})
+end
+
+local function reloadThings()
+    print("Reloading things.")
+    for _, act in ipairs(actions) do
+        undoLastAction(true)
+    end
+    undoLastAction(true)
+    loadSaves()
+end
+
+-- ==============================================================
+-- Hooks & Keybinds
+-- ==============================================================
+
+RegisterHook("/Script/Engine.PlayerController:ServerAcknowledgePossession", function(self, pawn)
+    if pawn:get():GetFullName():find("DefaultPawn") then
+        return
+    end
+    loadSaves()
+
+    -- custom overlapping volumes test, use spawn|SupraVolumeBase_C|0,0,0;0,0,0;15,15,15 to test at 0,0,0. Supraworld-specific, so pcall
+    pcall(function()
+        RegisterHook("/SupraCore/Systems/Volumes/SupraVolumeBase.SupraVolumeBase_C:On Player Character Begin Overlap", function(self, PlayerCharacter)
+            local tag = getLastTag(self:get())
+            if tag then
+                print("beginOverlap", tag, self:get():GetFullName())
+            end
+        end)
+
+        RegisterHook("/SupraCore/Systems/Volumes/SupraVolumeBase.SupraVolumeBase_C:On Player Character End Overlap", function(self, PlayerCharacter)
+            local tag = getLastTag(self:get())
+            if tag then
+                print("endOverlap", tag, self:get():GetFullName())
+            end
+        end)
+    end)
+
+end)
+
+
+-- RegisterKeyBind(Key.LEFT_MOUSE_BUTTON, {ModifierKey.CONTROL}, spawnThings) -- interferes with crouch
+
+RegisterKeyBind(Key.C, {ModifierKey.CONTROL}, copyObject)
+RegisterKeyBind(Key.V, {ModifierKey.CONTROL}, pasteObject)
+RegisterKeyBind(Key.X, {ModifierKey.CONTROL}, cutObject)
+RegisterKeyBind(Key.Z, {ModifierKey.CONTROL}, undoLastAction)
+
+RegisterKeyBind(Key.C, {ModifierKey.ALT}, copyObject)
+RegisterKeyBind(Key.V, {ModifierKey.ALT}, pasteObject)
+RegisterKeyBind(Key.X, {ModifierKey.ALT}, cutObject)
+RegisterKeyBind(Key.Z, {ModifierKey.ALT}, undoLastAction)
+
+RegisterKeyBind(Key.R, {ModifierKey.ALT, ModifierKey.CONTROL}, rotateObject) -- Alt+R interferes with screen capture
+
+RegisterKeyBind(Key.RIGHT_MOUSE_BUTTON, {ModifierKey.ALT}, copyObject)
+RegisterKeyBind(Key.LEFT_MOUSE_BUTTON, {ModifierKey.ALT}, pasteObject)
+
+RegisterKeyBind(Key.R, {ModifierKey.SHIFT}, reloadThings)
+
+RegisterConsoleCommandHandler("reload", function(FullCommand, Parameters, Ar)
+    Ar:Log(string.format("reloading %d thing(s)", #actions))
+    reloadThings()
+    return true
+end)

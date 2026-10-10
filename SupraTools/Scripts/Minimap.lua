@@ -1,0 +1,653 @@
+-- map that uses 1:1 scaling and doesn't update point coordinates, just rotates the layer
+-- Transparency is not supported for HDR textures in Supraworld (needs RT)
+
+local UEHelpers = require("UEHelpers")
+local searchRules = require("SearchRules")
+
+local VISIBLE = 4
+local HIDDEN = 2
+
+local defaultVisibility = HIDDEN
+
+local function FLinearColor(R, G, B, A) return { R = R, G = G, B = B, A = A } end
+local function FSlateColor(R, G, B, A) return { SpecifiedColor = FLinearColor(R, G, B, A), ColorUseRule = 0 } end
+
+local widgetAlignment = 'center'
+local widgetOpacity = 0.75
+local backgroundColor = FLinearColor(0, 0, 0, 0)
+local widgetSize = { X = 1024, Y = 1024 }
+local mapSize = { X = 200000, Y = 200000 }
+local scaling = 0.05
+local playerColor = FLinearColor(1, 1, 1, 1)
+local dotSize = 5.0 / scaling
+local showTiles = false
+local useSpherify = true
+
+local mapWidget = FindObject("UserWidget", "MinimapWidget")
+local playerImage = FindObject("Image", "playerDot")
+local bgLayer = FindObject("CanvasPanel", "DotLayer")
+local cachedPoints = {}
+
+local transparent = FLinearColor(0.5, 0.5, 0.5, 0.5)
+local green = FLinearColor(0, 1, 0, 1)
+local red = FLinearColor(1, 0, 0, 1)
+local orange = FLinearColor(1, 0.5, 0, 1)
+local beige = FLinearColor(0.741, 0.718, 0.420, 1)
+local brown = FLinearColor(0.647, 0.165, 0.165, 1)
+
+local solverPageColor = FLinearColor(0, 1, 1, 1)
+local solverCombinedColor = FLinearColor(0.85, 0.3, 1, 1)
+local solverPageTypes = {
+    Pickup_SolversGuidePage_C = true,
+    Pickup_SolversGuidePage_Combined_C = true,
+}
+
+local pointTypes = {
+    ChocolateEgg_C = { FLinearColor(0.65,0.15,1,1), transparent },
+    ShopEgg_C = { FLinearColor(0.65,0.15,1,1), transparent },
+    -- supraworld: cyan = Solver Guide Page, purple = combined page.
+    Pickup_SolversGuidePage_C = { solverPageColor, nil },
+    Pickup_SolversGuidePage_Combined_C = { solverCombinedColor, nil },
+    SecretVolume_C = { green, transparent },
+    RealCoinPickup_C = { orange, nil },
+    PresentBox_Lootpools_C = { red, nil },
+    ItemSpawner_C = { red, nil },
+    PresentBox_C = { red, nil },
+    PickupSpawner_C = { brown, nil },
+
+    -- supraland
+    SecretFound_C = { green, transparent },
+    Coin_C = { orange, nil },
+    PhysicalCoin_C = { orange, nil },
+    CoinBig_C = { orange, nil },
+    CoinRed_C = { red, nil },
+    Chest_C = { green, nil },
+    Bones_C = { beige, nil },
+    DestroyablePots_C = { brown, nil },
+}
+
+local function setFound(hook, name, found)
+    if found and name and hook:sub(1,1) == '/' then searchRules.mark(name) end
+    local point = name and cachedPoints and cachedPoints[name]
+    if point then
+        point.found = found
+        if found then
+            -- print("setFound", found, name:match(".*%.(.*)$"), "via", hook:match(".*%.(.*)$"))
+            -- local image = FindObject("Image", name .. ".Dot")
+            local image = point.image
+            if image and image:IsValid() then
+                -- print("removing point", image:GetFullName())
+                -- maybe do not remove completely just set color but it's faster
+                image:RemoveFromParent()
+                point.image = nil
+            end
+        end
+    end
+end
+
+
+local addPoint
+
+local function updateCachedPoints()
+    local total = 0
+    local seenPages = {}
+    for type, color in pairs(pointTypes) do
+        local count = 0
+        for _, actor in ipairs(FindAllOf(type) or {}) do
+            if actor:IsValid() then
+                local name = actor:GetFullName()
+                if solverPageTypes[type] then seenPages[name] = true end
+
+                local found = (actor.bFound == true) -- SecretVolume_C (supraworld)
+                    or (actor.StartClosed == true)   -- SecretFound_C (supraland)
+                    or (actor.bItemIsTaken == true)
+                    or (actor.bPickedUp == true)
+                    or (actor.IsOpen == true)
+                    or (actor.bHidden == true) -- some coins in Floortown are hidden
+                    or (actor['Pickup has been collected'] == true)
+
+                if type == "Coin_C" or type == "PhysicalCoin_C" or type == "CoinBig_C" or type == "CoinRed_C" then
+                    local coin = actor.Coin
+                    if coin and (not coin:IsValid() or not coin:IsVisible()) then found = true end
+                end
+
+                found = found or searchRules.isCollected(actor)
+                if found then
+                    setFound('updateCachedPoints', name, true)
+                end
+
+                cachedPoints[name] = cachedPoints[name] or {}
+                cachedPoints[name].loc = actor:K2_GetActorLocation() -- cannot cache, coordinates may caught up later
+                cachedPoints[name].found = found
+                cachedPoints[name].type = type
+                
+                local point = cachedPoints[name]
+                if not found and bgLayer and bgLayer:IsValid() and (not point.image or not point.image:IsValid()) then
+                    point.image = addPoint(bgLayer, point.loc, color[1], solverPageTypes[type] and dotSize * 1.8 or dotSize, name .. ".Dot")
+                end
+
+                count = count + 1
+            end
+        end
+        if count > 0 then
+            -- print(string.format("%s: %d", type, count))
+            total = total + count
+        end
+    end
+    for name, point in pairs(cachedPoints) do
+        if solverPageTypes[point.type] and not seenPages[name] then
+            if point.image and point.image:IsValid() then point.image:RemoveFromParent() end
+            cachedPoints[name] = nil
+        end
+    end
+    print(string.format("Total cached points: %d", total))
+
+    -- this is really expensive for some reason (linear search across 1000+ dots?)
+    playerImage = FindObject("Image", "playerDot")
+end
+
+local function setAlignment(slot, alignment)
+    local b = 0
+
+    local alignments = {
+        center = { anchor = { 0.5, 0.5 }, align = { 0.5, 0.5 }, pos = { 0, 0 } },
+        top = { anchor = { 0.5, 0 }, align = { 0.5, 0 }, pos = { 0, b } },
+        bottom = { anchor = { 0.5, 1 }, align = { 0.5, 1 }, pos = { 0, -b } },
+        topleft = { anchor = { 0, 0 }, align = { 0, 0 }, pos = { b, b } },
+        topright = { anchor = { 1, 0 }, align = { 1, 0 }, pos = { -b, b } },
+        bottomleft = { anchor = { 0, 1 }, align = { 0, 1 }, pos = { b, -b } },
+        bottomright = { anchor = { 1, 1 }, align = { 1, 1 }, pos = { -b, -b } }
+    }
+    local a = alignments[alignment] or alignments.center
+    slot:SetAnchors({ Minimum = { X = a.anchor[1], Y = a.anchor[2] }, Maximum = { X = a.anchor[1], Y = a.anchor[2] } })
+    slot:SetAlignment({ X = a.align[1], Y = a.align[2] })
+    slot:SetPosition({ X = a.pos[1], Y = a.pos[2] })
+end
+
+addPoint = function(layer, loc, color, size, name)
+    local image = StaticConstructObject(StaticFindObject("/Script/UMG.Image"), layer, FName(name))
+    local slot = layer:AddChildToCanvas(image)
+    image:SetColorAndOpacity(color)
+    image.Slot:SetAlignment({ X = 0.5, Y = 0.5 })
+    image.Slot:SetPosition({ X = loc.X, Y = loc.Y })
+    image.Slot:SetSize({ X = size, Y = size })
+    image.Slot:SetZOrder(math.floor(loc.Z))
+    return image
+end
+
+local function updateTiles()
+    local mapBounds = FindFirstOf("PlayerMapActor_C")
+    if not mapBounds:IsValid() then
+        return
+    end
+    -- print("### MAP ACTOR FOUND ###", mapBounds.MapWorldSize, mapBounds.MapWorldCenter.X, mapBounds.MapWorldCenter.Y)
+    -- Calculate tile size based on container
+
+    local tileSize = mapBounds.MapWorldSize / 2
+    local cx, cy = mapBounds.MapWorldCenter.X - tileSize, mapBounds.MapWorldCenter.Y - tileSize
+
+    local pos = { { 0, 0 }, { 1, 0 }, { 0, 1 }, { 1, 1 } }
+    for i = 1, 4 do
+        local image = FindObject("Image", "mapTile" .. i)
+        if image:IsValid() then
+            -- Position tile in grid (centered in the larger container)
+            image.Slot:SetPosition({ X = pos[i][1] * tileSize + cx, Y = pos[i][2] * tileSize + cy })
+            image.Slot:SetSize({ X = tileSize, Y = tileSize })
+            image:SetVisibility(showTiles and VISIBLE or HIDDEN)
+            -- image:SetColorAndOpacity({R = 1, G = 1, B = 1, A = 0.5})
+        end
+    end
+end
+
+local function loadImages(bgContainer)
+    local templates = {
+        "/Game/Blueprints/PlayerMap/Textures/T_Downscale%d.T_Downscale%d",
+        "/Game/Blueprints/PlayerMap/Textures/T_SIUMapV7Q%d.T_SIUMapV7Q%d",
+        "/PlayerMap/Textures/T_SupraworldMapV5Q%d.T_SupraworldMapV5Q%d",
+    }
+
+    local dmi = nil
+    local material = StaticFindObject("/PlayerMap/Materials/TextureBrush/M_TextureBrush.M_TextureBrush")
+    if material then
+        print("-- loaded material", material and material:GetFullName())
+        local matlib = StaticFindObject("/Script/Engine.Default__KismetMaterialLibrary")
+        print("-- loaded library", matlib:GetFullName(), matlib.CreateDynamicMaterialInstance)
+        local world = UEHelpers.GetWorld()
+        dmi = matlib:CreateDynamicMaterialInstance(world, material, FName("mapMaterial"), 0)
+        if dmi and dmi:IsValid() then
+            print("-- loaded dynamic material", dmi:GetFullName())
+        end
+    end
+
+    for i = 1, 4 do
+        for _, template in ipairs(templates) do
+            local path = string.format(template, i - 1, i - 1)
+            local texture = StaticFindObject(path)
+            if texture and texture:IsValid() then
+                print("Loaded " .. path, 'SRGB', texture.SRGB, 'Compression', texture.CompressionSettings, 'dmi', dmi and dmi:IsValid())
+                local image = StaticConstructObject(StaticFindObject("/Script/UMG.Image"), bgContainer, FName("mapTile" .. i))
+                if dmi and dmi:IsValid() and not texture.SRGB then
+                    -- print("setting HDR material")
+                    dmi:SetTextureParameterValue(FName("Texture"), texture)
+                    image:SetBrushFromMaterial(dmi)
+                else
+                    image:SetBrushFromTexture(texture, false)
+                end
+                local slot = bgContainer:AddChildToCanvas(image)
+                slot:SetZOrder(-8000 + i)
+                image:SetVisibility(HIDDEN) -- hide images before positioning
+                break
+            end
+        end
+    end
+
+end
+
+local function createMinimap()
+    mapWidget = FindObject("UserWidget", "MinimapWidget")
+
+    if mapWidget and mapWidget:IsValid() then
+        print("Minimap already exists.")
+        mapWidget:RemoveFromParent()
+        --return
+    end
+
+    print("#### CREATING MINIMAP ####")
+
+    local gi = UEHelpers.GetGameInstance()
+    local widget = StaticConstructObject(StaticFindObject("/Script/UMG.UserWidget"), gi, FName("MinimapWidget"))
+    widget.WidgetTree = StaticConstructObject(StaticFindObject("/Script/UMG.WidgetTree"), widget, FName("MinimapTree"))
+
+    local outerCanvas = StaticConstructObject(StaticFindObject("/Script/UMG.CanvasPanel"), widget.WidgetTree, FName("MinimapOuterCanvas"))
+    widget.WidgetTree.RootWidget = outerCanvas
+
+    local bg = StaticConstructObject(StaticFindObject("/Script/UMG.Border"), outerCanvas, FName("MinimapBG"))
+    bg:SetBrushColor(backgroundColor)
+    bg:SetPadding({ 0, 0, 0, 0 })
+
+    local slot = outerCanvas:AddChildToCanvas(bg)
+    slot:SetSize(widgetSize)
+    setAlignment(slot, widgetAlignment)
+
+    local canvas = StaticConstructObject(StaticFindObject("/Script/UMG.CanvasPanel"), bg, FName("MinimapCanvas"))
+    bg:SetContent(canvas)
+
+    local clipBox = StaticConstructObject(StaticFindObject("/Script/UMG.CanvasPanel"), canvas, FName("MinimapClipBox"))
+    local clipSlot = canvas:AddChildToCanvas(clipBox)
+    clipSlot:SetZOrder(-1000)
+    clipSlot:SetPosition({ X = 0, Y = 0 })
+    clipSlot:SetAnchors({ Minimum = { X = 0, Y = 0 }, Maximum = { X = 1, Y = 1 } })
+    clipSlot:SetOffsets({ Left = 0, Top = 0, Right = 0, Bottom = 0 })
+    clipBox:SetClipping(1)
+
+    -- Create a container for the map background that can be rotated and scaled
+    local dotLayer = StaticConstructObject(StaticFindObject("/Script/UMG.CanvasPanel"), clipBox, FName("DotLayer"))
+    local containerSlot = clipBox:AddChildToCanvas(dotLayer)
+    containerSlot:SetZOrder(0)
+    containerSlot:SetSize(mapSize)
+    containerSlot:SetAnchors({ Minimum = { X = 0.5, Y = 0.5 }, Maximum = { X = 0.5, Y = 0.5 } })
+    containerSlot:SetAlignment({ X = 0.5, Y = 0.5 })
+    containerSlot:SetPosition({ X = 0, Y = 0 })
+
+    bgLayer = nil
+    loadImages(dotLayer)
+    updateTiles()
+    updateCachedPoints()
+
+    for name, point in pairs(cachedPoints) do
+        local color = pointTypes[point.type][point.found and 2 or 1] or FLinearColor(0,0,0,0)
+        if not (solverPageTypes[point.type] and point.found) then
+            cachedPoints[name].image = addPoint(dotLayer, point.loc, color, solverPageTypes[point.type] and dotSize * 1.8 or dotSize, name .. ".Dot")
+        end
+    end
+
+    playerImage = addPoint(dotLayer, { X = 0, Y = 0, Z = 0 }, playerColor, dotSize, "playerDot")
+
+    bg:SetVisibility(VISIBLE)
+    widget:SetVisibility(defaultVisibility)
+    widget:AddToViewport(99)
+
+    widget:SetRenderOpacity(widgetOpacity)
+
+    mapWidget = widget
+    bgLayer = dotLayer
+end
+
+local function updatePoints(loc)
+    for name, point in pairs(cachedPoints) do
+        local image = cachedPoints[name].image
+
+        if image and image:IsValid() and image.Slot and image.Slot:IsValid() then
+            image:SetVisibility(searchRules.showOnMap(point.type) and not point.found and VISIBLE or HIDDEN)
+            local x, y = point.loc.X, point.loc.Y
+
+            if useSpherify and loc then
+                local cx, cy = loc.X, loc.Y
+
+                local w = widgetSize.X / scaling
+                local h = widgetSize.Y / scaling
+
+                local relX, relY = x - cx, y - cy
+                local dist = math.sqrt(relX * relX + relY * relY)
+                local radius = math.min(w, h) / 2 - dotSize / 2
+
+                if dist > radius then
+                    local scale = radius / dist
+                    relX = relX * scale
+                    relY = relY * scale
+                    x = cx + relX
+                    y = cy + relY
+                end
+            end
+
+            image.Slot:SetPosition({ X = x, Y = y })
+        end
+    end
+end
+
+local refreshPages
+local function updateMinimap(hook, name, param)
+    if SupraSearchTick then SupraSearchTick() end
+    if refreshPages then refreshPages() end
+    if not mapWidget or not mapWidget:IsValid() or mapWidget:GetVisibility() == HIDDEN then return end
+
+    if not bgLayer or not bgLayer:IsValid() then
+        bgLayer = FindObject("CanvasPanel", "DotLayer")
+    end
+
+    local pc = getCameraController and getCameraController() or UEHelpers.GetPlayerController()
+
+    if pc and pc:IsValid() then
+        local cam = pc.PlayerCameraManager
+        if cam and cam:IsValid() then
+            local loc = cam:GetCameraLocation()
+            local rot = cam:GetCameraRotation()
+
+            local size = mapSize.X
+
+            local scale = scaling
+            local angle = -rot.Yaw + 270
+
+            local cx = loc.X
+            local cy = loc.Y
+
+            local u = cx / size
+            local v = cy / size
+
+            bgLayer:SetRenderTransformPivot({ X = u, Y = v })
+
+            local tx = size * (0.5 - u)
+            local ty = size * (0.5 - v)
+
+            bgLayer:SetRenderTransform({
+                Translation = { X = tx, Y = ty },
+                Scale = { X = scale, Y = scale },
+                Shear = { X = 0, Y = 0 },
+                Angle = angle
+            })
+
+            if useSpherify then
+                updatePoints(loc)
+            end
+
+            if playerImage and playerImage:IsValid() then
+                playerImage.Slot:SetPosition({ X = loc.X, Y = loc.Y })
+                playerImage.Slot:SetZOrder(math.floor(loc.Z))
+            end
+        end
+    end
+
+    --[[
+    ExecuteWithDelay(33,function()
+        ExecuteInGameThread(updateMinimap) -- almost stable but hangs on scripts reloading by Ctrl+R
+    end)
+]]
+end
+
+
+function SupraSearchRefreshMap()
+    if not mapWidget or not mapWidget:IsValid() then return end
+    updateCachedPoints()
+    updateMinimap()
+end
+
+local lastPageRefresh=0
+refreshPages=function()
+        if os.clock()-lastPageRefresh<2 then return end
+        lastPageRefresh=os.clock()
+        if not mapWidget or not mapWidget:IsValid() or mapWidget:GetVisibility() == HIDDEN then return end
+        local seen = {}
+          local refreshedTypes={Pickup_SolversGuidePage_C=true,Pickup_SolversGuidePage_Combined_C=true,ChocolateEgg_C=true,ShopEgg_C=true}
+          for class in pairs(refreshedTypes) do
+            for _, actor in ipairs(FindAllOf(class) or {}) do
+                if actor:IsValid() then
+                    local name = actor:GetFullName()
+                    seen[name] = true
+                    local point = cachedPoints[name] or {type=class}
+                    cachedPoints[name] = point
+                    point.loc = actor:K2_GetActorLocation()
+                    point.found = searchRules.isCollected(actor)
+                    if point.found then
+                        setFound('page collected', name, true)
+                    elseif (not point.image or not point.image:IsValid()) and bgLayer and bgLayer:IsValid() then
+                        point.image = addPoint(bgLayer, point.loc, pointTypes[class][1], dotSize * 1.8, name .. '.Dot')
+                    end
+                end
+            end
+        end
+        for name, point in pairs(cachedPoints) do
+              if refreshedTypes[point.type] and not seen[name] then
+                if point.image and point.image:IsValid() then point.image:RemoveFromParent() end
+                cachedPoints[name] = nil
+            end
+        end
+end
+
+local function toggleMinimap()
+    if not mapWidget or not mapWidget:IsValid() then
+        createMinimap()
+    end
+
+    local visible = mapWidget:GetVisibility() ~= VISIBLE
+
+    defaultVisibility = visible and VISIBLE or HIDDEN
+
+    mapWidget:SetVisibility(visible and VISIBLE or HIDDEN)
+    if visible then
+        ExecuteInGameThread(function()
+            updateCachedPoints()
+            updateMinimap()
+        end)
+    end
+end
+
+local hookInfo = {}
+
+local function registerHooks()
+    local hooks = {
+
+        -- supraworld
+        { hook = "/Supraworld/Levelobjects/Collectible/Pickup_SolversGuidePage.Pickup_SolversGuidePage_C:ItemPickedup", call = function(hook, name) setFound(hook, name, true) end },
+        { hook = "/Supraworld/Levelobjects/Collectible/Pickup_SolversGuidePage_Combined.Pickup_SolversGuidePage_Combined_C:ItemPickedup", call = function(hook, name) setFound(hook, name, true) end },
+        { hook = "/SupraCore/Systems/Volumes/SecretVolume.SecretVolume_C:SetSecretFound",                     call = setFound },
+        { hook = "/Supraworld/Levelobjects/PickupBase.PickupBase_C:SetPickedUp",                              call = setFound },
+        { hook = "/Supraworld/Levelobjects/PickupBase.PickupBase_C:ItemPickedup",                             call = setFound },
+        { hook = "/Supraworld/Levelobjects/PickupSpawner.PickupSpawner_C:SetPickedUp",                        call = setFound },
+        { hook = "/Supraworld/Levelobjects/PickupSpawner.PickupSpawner_C:OnSpawnedItemPickedUp",              call = setFound }, -- works for hay
+        { hook = "/Supraworld/Levelobjects/RespawnablePickupSpawner.RespawnablePickupSpawner_C:SetPickedUp",  call = setFound },
+        { hook = "/Supraworld/Systems/Shop/ShopItemSpawner.ShopItemSpawner_C:SetItemIsTaken",                 call = setFound },
+        -- this is very CPU intensive but the only I found. Needs checking if UseAndCarry works at start
+        { hook = '/Supraworld/Abilities/Interact/Ability_UseAndCarry.Ability_UseAndCarry_C:BndEvt__Ability_UseAndCarry_Tick_PostPhysics_K2Node_ComponentBoundEvent_0_OnTick__DelegateSignature', call = updateMinimap },
+
+        -- supraland
+        { hook = "/Game/Blueprints/Levelobjects/SecretFound.SecretFound_C:Activate" }, -- Supraland
+        { hook = "/Game/Blueprints/Levelobjects/SecretFound.SecretFound_C:BndEvt__Box_K2Node_ComponentBoundEvent_0_ComponentBeginOverlapSignature__DelegateSignature" }, -- SIU
+        { hook = "/Game/Blueprints/Levelobjects/Coin.Coin_C:Timeline_0__FinishedFunc" },
+        { hook = "/Game/Blueprints/Levelobjects/Coin.Coin_C:DestroyAllComponents" },
+        { hook = "/Game/Blueprints/Levelobjects/CoinBig.CoinBig_C:Timeline_0__FinishedFunc" },
+        { hook = "/Game/Blueprints/Levelobjects/CoinRed.CoinRed_C:Timeline_0__FinishedFunc" },
+        { hook = "/Game/Blueprints/Levelobjects/PhysicalCoin.PhysicalCoin_C:DestroyAllComponents" },
+        { hook = "/Game/Blueprints/Levelobjects/Chest.chest_C:Timeline_0__FinishedFunc" }, -- Supraland
+        { hook = "/Game/Blueprints/Levelobjects/Chest.Chest_C:Timeline_0__FinishedFunc" }, -- SIU
+        { hook = "/Game/Blueprints/Levelobjects/Bones.Bones_C:Timeline_0__FinishedFunc" }, -- Crash DLC
+        { hook = "/Game/Blueprints/Levelobjects/DestroyablePots.DestroyablePots_C:ReceiveAnyDamage" },
+
+        { hook = '/Game/FirstPersonBP/Blueprints/HintText.HintText_C:Tick', call = updateMinimap }, -- works in supraland and/or siu pretty reliably (not in supraworld)
+
+    }
+
+    for _, hook in ipairs(hooks) do
+        ok, err = pcall(function()
+            local p = hookInfo[hook.hook]
+            if p then
+                UnregisterHook(hook.hook, p.preId, p.postId)
+            end
+            local preId, postId = RegisterHook(hook.hook, function(self, param, ...)
+                local name = self:get():GetFullName()
+                -- print("Hook fired:", hook.hook, "Self:", self:get():GetFName():ToString(), "param", param and param:get())
+                if hook.call then
+                    hook.call(hook.hook, name, param and param:get())
+                else
+                    setFound(hook.hook, name, true)
+                end
+            end)
+            hookInfo[hook.hook] = {}
+            hookInfo[hook.hook].preId = preId
+            hookInfo[hook.hook].postId = postId
+        end)
+        -- print(ok and "REGISTERED" or "NOT FOUND", hook.hook)
+    end
+end
+
+RegisterHook("/Script/Engine.PlayerController:ServerAcknowledgePossession", function(self, pawn)
+    if pawn:get():GetFullName():find("DefaultPawn") then
+        return
+    end
+
+    -- need delay to load things
+    ExecuteWithDelay(1000, function()
+        createMinimap()
+        updateMinimap()
+        registerHooks()
+    end)
+end)
+
+LoopAsync(5*60*1000, function() -- let's see if hooks work
+    if not mapWidget or not mapWidget:IsValid() or mapWidget:GetVisibility() == HIDDEN then return end
+    ExecuteInGameThread(function()
+        updateCachedPoints()
+        updateMinimap()
+    end)
+end)
+
+local function remapImages()
+    if not bgLayer or not bgLayer:IsValid() then return end
+    local childCount = bgLayer:GetChildrenCount()
+    for i = 0, childCount - 1 do
+        local image = bgLayer:GetChildAt(i)
+        if image:IsValid() and image.Slot:IsValid() then
+            local name = image:GetFName():ToString():gsub(".Dot","")
+            local point = cachedPoints[name]
+            if point then
+                point.image = image
+            end
+        end
+    end
+end
+
+if mapWidget and mapWidget:IsValid() then
+    print("-- re-registering hooks -- ")
+    registerHooks()
+
+    ExecuteInGameThread(function()
+        updateCachedPoints()
+        remapImages()
+        updatePoints()
+    end)
+
+end
+
+local widgetPosition = 0
+
+local widgetPositions = {
+    { align = 'bottomright', size = { X = 320, Y = 320 } },
+    { align = 'bottomleft', size = { X = 320, Y = 320 } },
+    { align = 'topleft',   size = { X = 320, Y = 320 } },
+    { align = 'topright',  size = { X = 320, Y = 320 } },
+    { align = 'center',    size = { X = 800, Y = 800 } },
+}
+
+local function updateMinimapWidget()
+    if not mapWidget or not mapWidget:IsValid() then return end
+    local obj = FindObject("Border", "MinimapBG")
+    if not obj:IsValid() then return end
+    obj.Slot:SetSize(widgetSize)
+    setAlignment(obj.Slot, widgetAlignment)
+    updateTiles()
+    updatePoints()
+end
+
+local function cycleMinimapPosition()
+    widgetPosition = (widgetPosition + 1) % #widgetPositions
+    local p = widgetPositions[widgetPosition + 1]
+    widgetAlignment = p.align
+    widgetSize = p.size
+    updateMinimapWidget()
+end
+
+local function toggleSpherify()
+    useSpherify = not useSpherify
+    print("toggling spherify", useSpherify)
+    updateMinimapWidget()
+end
+
+local function toggleBackground()
+    showTiles = not showTiles
+    print("toggling tiles", showTiles)
+    updateMinimapWidget()
+end
+
+function tfind(t,v) for i,x in ipairs(t)do if x==v then return i end end end
+
+local function toggleSize()
+    local s = {320, 480, 640, 800, 960}
+    local w = s[ (tfind(s,widgetSize.X) or 0) % #s + 1 ]
+    print("set size to", w)
+    widgetSize = {X=w,Y=w}
+    updateMinimapWidget()
+end
+
+local function toggleScale()
+    local s = {1/100, 1/50, 1/25, 1/10}
+    local w = s[ (tfind(s, scaling) or 0) % #s + 1 ]
+    print("set scaling to", w)
+    scaling = w
+    updateMinimapWidget()
+end
+
+RegisterKeyBind(Key.M, { ModifierKey.ALT }, toggleMinimap)
+RegisterKeyBind(Key.M, { ModifierKey.ALT, ModifierKey.CONTROL }, cycleMinimapPosition)
+RegisterKeyBind(Key.M, { ModifierKey.SHIFT }, toggleBackground)
+RegisterKeyBind(Key.M, { ModifierKey.ALT, ModifierKey.SHIFT}, toggleSize)
+RegisterKeyBind(Key.M, { ModifierKey.CONTROL }, toggleSpherify)
+RegisterKeyBind(Key.M, { ModifierKey.CONTROL, ModifierKey.SHIFT }, toggleScale)
+
+local minimapHelp=[[minimap <on|off> (Alt+M)
+minimap position <bottomleft|topleft|topright|bottomright|center> (Alt+Ctrl+M)
+minimap background <on|off> (Shift+M)
+minimap spherify <on|off> (Ctrl+M)
+minimap scale <scale> (Alt+Shift+M)
+minimap size <size> (Ctrl+Shift+M)
+]]
+
+RegisterConsoleCommandHandler("minimap", function(FullCommand, Parameters, Ar)
+    if #Parameters == 0 then
+        Ar:Log(minimapHelp)
+        return true
+    end
+    -- todo more commands
+    Ar:Log("toggling minimap")
+    toggleMinimap()
+    return true
+end)
+
