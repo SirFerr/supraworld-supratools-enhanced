@@ -89,6 +89,7 @@ end
 local addPoint
 
 local function updateCachedPoints()
+    searchRules.refreshEggLocations()
     local total = 0
     local seenPages = {}
     for type, color in pairs(pointTypes) do
@@ -112,6 +113,7 @@ local function updateCachedPoints()
                 end
 
                 found = found or searchRules.isCollected(actor)
+                    or (type == 'SecretVolume_C' and searchRules.isEggSecret(actor))
                 if found then
                     setFound('updateCachedPoints', name, true)
                 end
@@ -416,8 +418,9 @@ refreshPages=function()
         if os.clock()-lastPageRefresh<2 then return end
         lastPageRefresh=os.clock()
         if not mapWidget or not mapWidget:IsValid() or mapWidget:GetVisibility() == HIDDEN then return end
+        searchRules.refreshEggLocations()
         local seen = {}
-          local refreshedTypes={Pickup_SolversGuidePage_C=true,Pickup_SolversGuidePage_Combined_C=true,ChocolateEgg_C=true,ShopEgg_C=true}
+          local refreshedTypes={Pickup_SolversGuidePage_C=true,Pickup_SolversGuidePage_Combined_C=true,ChocolateEgg_C=true,ShopEgg_C=true,SecretVolume_C=true}
           for class in pairs(refreshedTypes) do
             for _, actor in ipairs(FindAllOf(class) or {}) do
                 if actor:IsValid() then
@@ -427,6 +430,7 @@ refreshPages=function()
                     cachedPoints[name] = point
                     point.loc = actor:K2_GetActorLocation()
                     point.found = searchRules.isCollected(actor)
+                        or (class == 'SecretVolume_C' and searchRules.isEggSecret(actor))
                     if point.found then
                         setFound('page collected', name, true)
                     elseif (not point.image or not point.image:IsValid()) and bgLayer and bgLayer:IsValid() then

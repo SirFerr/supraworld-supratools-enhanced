@@ -9,3 +9,7 @@
 - Проверены SHA256 встроенного пакета, установка в изолированную папку, сохранение настроек и других модов, точный откат.
 
 Это ограниченная проверка, а не гарантия отсутствия вылетов при длительной игре. Проверка содержимого инвентаря через Conv_SoftObjRefToSoftObjPath удалена: она предшествовала вылету UE4SS с неподдерживаемым Utf8StrProperty. Поиск скрывает яйца по состоянию объектов и награды; наличие способности, выданной отдельно от яйца, не определяется.
+
+## 2026-10-13 update
+
+Lua model tests passed for unchanged eggs, hidden actors, observed rewards subsequently destroyed, and secret-volume duplicates within 1.5 metres of eggs. All bundled Lua files compile. These changes were not tested in-game. Proximity filtering can suppress unrelated nearby secrets; inventory ownership is not queried. A reward destroyed before the first scan may remain undetectable if the egg has no retained collected state.

@@ -14,21 +14,50 @@ end
 rules.classCategory.ItemSpawner_C="chests"
 rules.classCategory.PickupSpawner_C="chests"
 local picked = {}
+local observedRewards = {}
 function rules.mark(name) picked[name] = true end
 function rules.wasPicked(name) return picked[name]==true end
+local function flag(actor, name)
+    local ok,value=pcall(function() return actor[name] end)
+    return ok and value==true
+end
+local function valid(actor)
+    local ok,value=pcall(function() return actor and actor:IsValid() end)
+    return ok and value==true
+end
+local function property(actor,name)
+    local ok,value=pcall(function() return actor[name] end)
+    return ok and value or nil
+end
+local function taken(actor)
+    if not valid(actor) then return false end
+    if picked[actor:GetFullName()] then return true end
+    for _,name in ipairs({'bPickedUp','bFound','bItemIsTaken','IsOpen','bEggIsCut',
+        'ChocolateMeltedOpen','bHidden','Pickup has been collected'}) do
+        if flag(actor,name) then return true end
+    end
+    local ok,hidden=pcall(function() return actor:IsHidden() end)
+    if ok and hidden==true then return true end
+    return false
+end
 local function eggRewardCollected(actor)
     local ok,collected=pcall(function()
         local class=actor:GetClass():GetFName():ToString()
         if class=="ChocolateEgg_C" then
-            local egg=actor.ToyEgg
-            if egg and egg:IsValid() then return eggRewardCollected(egg) or egg.bEggIsCut==true end
+            local egg=property(actor,'ToyEgg')
+            if valid(egg) then return taken(egg) or eggRewardCollected(egg) end
         elseif class=="ShopEgg_C" then
             if actor.bEggIsCut==true then return true end
-            local reward=actor.SpawnedShopItem
-            if reward and reward:IsValid() then
-                return picked[reward:GetFullName()]==true or reward.bItemIsTaken==true
-                    or reward.bPickedUp==true or reward['Pickup has been collected']==true
+            local reward=property(actor,'SpawnedShopItem')
+            local name=actor:GetFullName()
+            if valid(reward) then
+                observedRewards[name]=reward
+                return taken(reward)
             end
+            -- Never interpret an initially empty reward slot as collected.
+            -- A reward observed alive and subsequently destroyed is completed.
+            local previous=observedRewards[name]
+            if previous and not valid(previous) then return true end
         end
         return false
     end)
@@ -36,25 +65,40 @@ local function eggRewardCollected(actor)
 end
 function rules.isCollected(actor)
     if not actor or not actor:IsValid() then return true end
-    return picked[actor:GetFullName()] == true
-        or actor.bPickedUp == true or actor.bFound == true
-        or actor.bItemIsTaken == true or actor.IsOpen == true
-        or actor.bEggIsCut == true or actor.ChocolateMeltedOpen == true
-        or actor.bHidden == true or actor['Pickup has been collected'] == true
-        or eggRewardCollected(actor)
+    return taken(actor) or eggRewardCollected(actor)
+end
+local eggLocations={}
+function rules.refreshEggLocations()
+    eggLocations={}
+    for _,class in ipairs({'ShopEgg_C','ChocolateEgg_C'}) do
+        for _,egg in ipairs(FindAllOf(class) or {}) do
+            if valid(egg) then eggLocations[#eggLocations+1]=egg:K2_GetActorLocation() end
+        end
+    end
+end
+function rules.isEggSecret(actor)
+    -- Egg secrets use a separate SecretVolume actor. Suppress only nearby
+    -- duplicates, including volumes around eggs that have already been opened.
+    local loc=actor:K2_GetActorLocation()
+    for _,egg in ipairs(eggLocations) do
+        local dx,dy,dz=loc.X-egg.X,loc.Y-egg.Y,loc.Z-egg.Z
+        if dx*dx+dy*dy+dz*dz<=150*150 then return true end
+    end
+    return false
 end
 function rules.showOnMap(class)
     local category=rules.classCategory[class]
     return not category or rules.enabled[category] == true
 end
 function rules.gather(includeDisabled)
+    rules.refreshEggLocations()
     local result={}
     local seen={}
     for _,category in ipairs(rules.categories) do
         if includeDisabled or rules.enabled[category.id] then
             for _,class in ipairs(category.classes) do
                 for _,actor in ipairs(FindAllOf(class) or {}) do
-                    if not rules.isCollected(actor) then
+                    if not rules.isCollected(actor) and not (class=='SecretVolume_C' and rules.isEggSecret(actor)) then
                         local name=actor:GetFullName()
                         if not seen[name] then
                             seen[name]=true
