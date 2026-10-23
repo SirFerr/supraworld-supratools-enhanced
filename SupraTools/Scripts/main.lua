@@ -110,6 +110,10 @@ require("PlayerProperties")
 require("Minimap" .. dev)
 require("Inventory")
 
-require("SupraProtection")
+-- Optional protection must not prevent the search/menu bindings from loading.
+local protectionOK, protectionError = pcall(require, "SupraProtection")
+if not protectionOK then
+    print("SupraProtection unavailable:", protectionError)
+end
 
 require("SupraSearch")

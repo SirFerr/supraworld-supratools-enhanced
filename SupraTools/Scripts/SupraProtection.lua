@@ -2,6 +2,7 @@ local UEHelpers = require("UEHelpers")
 local enabled = true
 local installed = false
 local blocked = 0
+local lastInstallError
 local hookPath = "/Supraworld/Core/Characters/SupraworldCharacterBase.SupraworldCharacterBase_C:IsImmuneToDamage?"
 
 local function player()
@@ -15,7 +16,7 @@ local function install()
     if installed then return end
     local fn = StaticFindObject(hookPath)
     if not fn or not fn:IsValid() then return end
-    RegisterHook(hookPath, function(context)
+    local ok, err = pcall(RegisterHook, hookPath, function(context)
         if not enabled then return end
         local actor = context:get()
         local localPlayer = player()
@@ -24,6 +25,15 @@ local function install()
             return true
         end
     end)
+    if not ok then
+        local message = tostring(err)
+        if message ~= lastInstallError then
+            print("Protection unavailable; menu/search remain enabled:", message)
+            lastInstallError = message
+        end
+        return
+    end
+    lastInstallError = nil
     installed = true
     print("Protection ON; Alt+K toggles player damage immunity")
 end
@@ -50,7 +60,7 @@ RegisterHook("/Script/Engine.PlayerController:ClientRestart", function()
 end)
 RegisterKeyBind(Key.K, {ModifierKey.ALT}, function()
     enabled = not enabled
-    print("Protection", enabled and "ON" or "OFF")
+    print("Protection", installed and (enabled and "ON" or "OFF") or "UNAVAILABLE")
 end)
 RegisterConsoleCommandHandler("supra_status", function()
     ExecuteInGameThread(status)
