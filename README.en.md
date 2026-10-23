@@ -4,6 +4,12 @@
 
 A community modification of **[SupraTools 1.0.3 by joric](https://github.com/joric/SupraTools)**, adding player protection, item search and glowing world beacons. Original SupraTools features are retained. joric is not responsible for these additions.
 
+## 1.1.2 — hotkey loading fix
+
+A failed protection hook for `IsImmuneToDamage?` no longer aborts loading the menu and search bindings (Alt+H, Alt+B and Alt+arrows). Alt+K reports `UNAVAILABLE` when UE4SS cannot install protection; damage immunity is unavailable in that state. The installer includes the fixed source files and retains the previous UE4SS runtime.
+
+Lua syntax and failure/retry model tests passed. This fix has not been tested in-game.
+
 ## Features
 
 - Unified help and search panel: **Alt+H**.

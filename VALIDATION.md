@@ -13,3 +13,9 @@
 ## 2026-10-13 update
 
 Lua model tests passed for unchanged eggs, hidden actors, observed rewards subsequently destroyed, and secret-volume duplicates within 1.5 metres of eggs. All bundled Lua files compile. These changes were not tested in-game. Proximity filtering can suppress unrelated nearby secrets; inventory ownership is not queried. A reward destroyed before the first scan may remain undetectable if the egg has no retained collected state.
+
+## 2026-10-23 — v1.1.2
+
+The installed main.lua and SupraProtection.lua matched commit dc4bbd1. The current game log showed RegisterHook failing on IsImmuneToDamage? (UFunction::Func: 0x0), aborting main.lua before SupraSearch loaded.
+
+Lua model checks passed: failed protection registration does not abort the module, Alt+K reports UNAVAILABLE, ClientRestart retries registration, successful registration is not duplicated, and main.lua loads SupraSearch even if the protection module raises. All Lua files compile. The rebuilt installer changes only the two fixed Lua files in its embedded payload; the runtime is unchanged. No in-game test of this fix has been performed.
