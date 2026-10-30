@@ -38,11 +38,13 @@ local brown = FLinearColor(0.647, 0.165, 0.165, 1)
 local solverPageColor = FLinearColor(0, 1, 1, 1)
 local solverCombinedColor = FLinearColor(0.85, 0.3, 1, 1)
 local solverPageTypes = {
+    Pickup_Card_C = true, -- Also enlarge and remove vanished card markers.
     Pickup_SolversGuidePage_C = true,
     Pickup_SolversGuidePage_Combined_C = true,
 }
 
 local pointTypes = {
+    Pickup_Card_C = { FLinearColor(1,0.2,0.65,1), nil },
     ChocolateEgg_C = { FLinearColor(0.65,0.15,1,1), transparent },
     ShopEgg_C = { FLinearColor(0.65,0.15,1,1), transparent },
     -- supraworld: cyan = Solver Guide Page, purple = combined page.
@@ -348,7 +350,11 @@ local function updatePoints(loc)
 end
 
 local refreshPages
+local lastMapUpdate = 0
 local function updateMinimap(hook, name, param)
+    local now = os.clock()
+    if now - lastMapUpdate < 1/30 then return end
+    lastMapUpdate = now
     if SupraSearchTick then SupraSearchTick() end
     if refreshPages then refreshPages() end
     if not mapWidget or not mapWidget:IsValid() or mapWidget:GetVisibility() == HIDDEN then return end
@@ -420,7 +426,7 @@ refreshPages=function()
         if not mapWidget or not mapWidget:IsValid() or mapWidget:GetVisibility() == HIDDEN then return end
         searchRules.refreshEggLocations()
         local seen = {}
-          local refreshedTypes={Pickup_SolversGuidePage_C=true,Pickup_SolversGuidePage_Combined_C=true,ChocolateEgg_C=true,ShopEgg_C=true,SecretVolume_C=true}
+          local refreshedTypes={Pickup_Card_C=true,Pickup_SolversGuidePage_C=true,Pickup_SolversGuidePage_Combined_C=true,ChocolateEgg_C=true,ShopEgg_C=true,SecretVolume_C=true}
           for class in pairs(refreshedTypes) do
             for _, actor in ipairs(FindAllOf(class) or {}) do
                 if actor:IsValid() then

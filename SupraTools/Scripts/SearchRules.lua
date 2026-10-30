@@ -5,8 +5,9 @@ rules.categories = {
     {id="coins", label="Монеты", color={R=1,G=0.75,B=0.1,A=0.85}, classes={"RealCoinPickup_C"}},
     {id="chests", label="Сундуки / подарки", color={R=1,G=0.25,B=0.3,A=0.85}, classes={"PresentBox_C","PresentBox_Lootpools_C"}},
     {id="abilities", label="Способности / яйца", color={R=0.65,G=0.15,B=1,A=0.85}, classes={"ChocolateEgg_C","ShopEgg_C"}},
+    {id="cards", label="Игральные карты", color={R=1,G=0.2,B=0.65,A=0.85}, classes={"Pickup_Card_C"}},
 }
-rules.enabled = {pages=true,secrets=true,coins=true,chests=true,abilities=true}
+rules.enabled = {pages=true,secrets=true,coins=true,chests=true,abilities=true,cards=true}
 rules.classCategory = {}
 for _,category in ipairs(rules.categories) do
     for _,class in ipairs(category.classes) do rules.classCategory[class]=category.id end

@@ -262,7 +262,7 @@ end)
 local lastUpdate=0
 function SupraSearchTick()
     local now=os.clock()
-    if now-lastUpdate<1/120 then return end
+    if now-lastUpdate<1/30 then return end
     lastUpdate=now
     local pending=actions; actions={}
     lastUpdate=now

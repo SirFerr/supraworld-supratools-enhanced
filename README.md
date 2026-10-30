@@ -92,3 +92,7 @@ python tools/build_installer.py --win64 "D:\SteamLibrary\steamapps\common\Supraw
 ## Благодарности и лицензия
 
 Основа: **joric / [SupraTools](https://github.com/joric/SupraTools)**, MIT, copyright 2025 joric. Дополнения и сборка подготовлены для этого проекта с помощью Codex. Runtime: **[UE4SS](https://github.com/UE4SS-RE/RE-UE4SS)**, оригинальная лицензия включена в установщик. Подробнее: [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+### Обновление freecam — 30.10.2026
+
+Камера работает через CameraActor: СКМ — переключение, WASD/мышь — движение и обзор, Space — вверх, Shift — вниз, колёсико — скорость, ЛКМ — телепортация. Слева сверху показана скорость в м/с. Карты сохранены на радаре. Переключение оружия колёсиком пока остаётся известным ограничением. Установщик отключает ConsoleEnablerMod и CheatManagerEnablerMod. Подробности проверки — в VALIDATION.md.

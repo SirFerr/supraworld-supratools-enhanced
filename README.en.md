@@ -91,3 +91,7 @@ python tools/build_installer.py --win64 "D:\SteamLibrary\steamapps\common\Supraw
 ## Credits and licence
 
 Based on **joric / [SupraTools](https://github.com/joric/SupraTools)**, MIT, copyright 2025 joric. Additions and packaging were prepared with Codex. Runtime: **[UE4SS](https://github.com/UE4SS-RE/RE-UE4SS)**; its licence is included in the installer. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+### Current freecam update (2026-10-30)
+
+CameraActor freecam: MMB toggles, WASD/mouse navigate, Space rises, Shift descends, wheel adjusts speed, LMB teleports. Top-left HUD displays speed in m/s. Playing cards remain on radar. Weapon switching via the wheel is a known limitation; see VALIDATION.md. The installer disables the console and CheatManager enabler mods.

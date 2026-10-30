@@ -19,3 +19,11 @@ Lua model tests passed for unchanged eggs, hidden actors, observed rewards subse
 The installed main.lua and SupraProtection.lua matched commit dc4bbd1. The current game log showed RegisterHook failing on IsImmuneToDamage? (UFunction::Func: 0x0), aborting main.lua before SupraSearch loaded.
 
 Lua model checks passed: failed protection registration does not abort the module, Alt+K reports UNAVAILABLE, ClientRestart retries registration, successful registration is not duplicated, and main.lua loads SupraSearch even if the protection module raises. All Lua files compile. The rebuilt installer changes only the two fixed Lua files in its embedded payload; the runtime is unchanged. No in-game test of this fix has been performed.
+
+## 2026-10-30 — CameraActor freecam
+
+Freecam now uses CameraActor instead of CheatManager. Controls: middle mouse toggles; WASD and mouse move/look; Space/Shift move vertically; wheel changes speed in 5% steps; left click teleports toward the camera trace. A small top-left HUD shows speed in metres per second. Camera aspect ratio is unconstrained for ultrawide displays. Minimap/search updates are limited to 30 Hz; playing cards are included in radar/search.
+
+The user reports the current setup appears to work. Weapon switching with the wheel remains unresolved; the Enhanced Input mapping workaround is not confirmed. Exact matching of the gameplay projection remains unresolved. Earlier attempts to copy projection settings and change legacy input mappings were rolled back. Crash-free operation and a performance improvement are not established.
+
+A local saved SpawnThings hide action was quarantined after stack-overflow crashes; the correlation is not a proven cause, and that user-specific file is not distributed. Frame Generation settings were not changed. The installer disables CheatManagerEnablerMod and ConsoleEnablerMod to avoid automatic console/cheat setup in Shipping builds. Its existing bundled runtime is retained.

@@ -92,8 +92,9 @@ $modsPath=SafePath $target 'ue4ss/Mods/mods.txt'
 $mods=if(Test-Path -LiteralPath $modsPath){[IO.File]::ReadAllText($modsPath)}else{''}
 foreach($mod in @('CheatManagerEnablerMod','ConsoleCommandsMod','ConsoleEnablerMod','SupraTools','Keybinds')) {
     $pattern='(?m)^\s*'+[regex]::Escape($mod)+'\s*:\s*[01][^\r\n]*'
-    if([regex]::IsMatch($mods,$pattern)) {$mods=[regex]::Replace($mods,$pattern,$mod+' : 1')}
-    else {$mods=$mods.TrimEnd()+"`r`n"+$mod+' : 1'+"`r`n"}
+    $enabled=if($mod -in @('CheatManagerEnablerMod','ConsoleEnablerMod')){'0'}else{'1'}
+    if([regex]::IsMatch($mods,$pattern)) {$mods=[regex]::Replace($mods,$pattern,$mod+' : '+$enabled)}
+    else {$mods=$mods.TrimEnd()+"`r`n"+$mod+' : '+$enabled+"`r`n"}
 }
 $writes['ue4ss/Mods/mods.txt']=[Text.UTF8Encoding]::new($false).GetBytes($mods)
 if($VerifyOnly) {Write-Output ('Verified package and target: '+$target+'. Planned writes: '+$writes.Count);return}
