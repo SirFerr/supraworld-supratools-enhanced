@@ -46,6 +46,7 @@ local solverPageTypes = {
 local pointTypes = {
     Pickup_Card_C = { FLinearColor(1,0.2,0.65,1), nil },
     ChocolateEgg_C = { FLinearColor(0.65,0.15,1,1), transparent },
+    ShopItemChip_C = { red, transparent },
     ShopEgg_C = { FLinearColor(0.65,0.15,1,1), transparent },
     -- supraworld: cyan = Solver Guide Page, purple = combined page.
     Pickup_SolversGuidePage_C = { solverPageColor, nil },
@@ -115,6 +116,7 @@ local function updateCachedPoints()
                 end
 
                 found = found or searchRules.isCollected(actor)
+                    or (type == 'ShopEgg_C' and searchRules.isWrappedEgg(actor))
                     or (type == 'SecretVolume_C' and searchRules.isEggSecret(actor))
                 if found then
                     setFound('updateCachedPoints', name, true)
@@ -426,7 +428,7 @@ refreshPages=function()
         if not mapWidget or not mapWidget:IsValid() or mapWidget:GetVisibility() == HIDDEN then return end
         searchRules.refreshEggLocations()
         local seen = {}
-          local refreshedTypes={Pickup_Card_C=true,Pickup_SolversGuidePage_C=true,Pickup_SolversGuidePage_Combined_C=true,ChocolateEgg_C=true,ShopEgg_C=true,SecretVolume_C=true}
+          local refreshedTypes={Pickup_Card_C=true,Pickup_SolversGuidePage_C=true,Pickup_SolversGuidePage_Combined_C=true,ChocolateEgg_C=true,ShopEgg_C=true,ShopItemChip_C=true,SecretVolume_C=true}
           for class in pairs(refreshedTypes) do
             for _, actor in ipairs(FindAllOf(class) or {}) do
                 if actor:IsValid() then
@@ -436,6 +438,7 @@ refreshPages=function()
                     cachedPoints[name] = point
                     point.loc = actor:K2_GetActorLocation()
                     point.found = searchRules.isCollected(actor)
+                        or (class == 'ShopEgg_C' and searchRules.isWrappedEgg(actor))
                         or (class == 'SecretVolume_C' and searchRules.isEggSecret(actor))
                     if point.found then
                         setFound('page collected', name, true)

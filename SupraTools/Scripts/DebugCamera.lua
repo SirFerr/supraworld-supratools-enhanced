@@ -1,6 +1,5 @@
 local UEHelpers = require("UEHelpers")
 local state = nil
-local queued = false
 local speed = 1000
 local function valid(o) return o and o:IsValid() end
 
@@ -26,52 +25,124 @@ local function updateHud()
     hud:SetVisibility(4)
     hudText:SetText(UEHelpers.GetKismetTextLibrary():Conv_StringToText(string.format("Freecam | Speed %.1f", speed/100)))
 end
-local function rebuild(context)
-    local library = StaticFindObject("/Script/EnhancedInput.Default__EnhancedInputLibrary")
-    library:RequestRebuildControlMappingsUsingContext(context, true)
-end
-local function blockWheel(s)
-    s.wheelMappings = {}
-    for _, context in ipairs(FindAllOf("InputMappingContext") or {}) do
-        if valid(context) then
-            local changed = false
-            context.Mappings:ForEach(function(index, param)
-                local mapping = param:get()
-                local name = mapping.Key.KeyName:ToString()
-                if name == "MouseWheelAxis" or name == "MouseScrollUp" or name == "MouseScrollDown" then
-                    table.insert(s.wheelMappings, {context=context,index=index,name=name})
-                    mapping.Key.KeyName = FName("None")
-                    changed = true
-                end
-            end)
-            if changed then rebuild(context) end
-        end
+local cameraKeys = {
+    "W", "A", "S", "D", "SpaceBar", "LeftShift",
+    "MiddleMouseButton", "LeftMouseButton", "MouseWheelAxis", "MouseScrollUp", "MouseScrollDown",
+}
+
+local function captureInput(s)
+    local library = StaticFindObject("/Script/Engine.Default__SubsystemBlueprintLibrary")
+    local class = StaticFindObject("/Script/EnhancedInput.EnhancedInputLocalPlayerSubsystem")
+    local subsystem = library:GetLocalPlayerSubSystemFromPlayerController(s.pc, class)
+    if not valid(subsystem) then error("Enhanced Input subsystem unavailable") end
+
+    local context = StaticConstructObject(
+        StaticFindObject("/Script/EnhancedInput.InputMappingContext"), subsystem)
+    if not valid(context) then error("Free camera input context unavailable") end
+    local actionClass = StaticFindObject("/Script/EnhancedInput.InputAction")
+    for _, name in ipairs(cameraKeys) do
+        -- Separate actions keep opposite wheel directions and held keys independent.
+        local action = StaticConstructObject(actionClass, context)
+        if not valid(action) then error("Free camera input action unavailable") end
+        action.ValueType = 1 -- Axis1D also accepts the signed MouseWheelAxis value.
+        action.bConsumeInput = true
+        action.bConsumesActionAndAxisMappings = true
+        action.TriggerEventsThatConsumeLegacyKeys = 31 -- All five ETriggerEvent flags.
+        context:MapKey(action, {KeyName=FName(name)})
     end
+
+    s.subsystem, s.inputContext = subsystem, context
+    subsystem:AddMappingContext(context, 2147483647, {
+        bForceImmediately=true, bIgnoreAllPressedKeysUntilRelease=false,
+    })
 end
-local function restoreWheel(s)
-    for _, entry in ipairs(s.wheelMappings or {}) do
-        if valid(entry.context) then
-            entry.context.Mappings[entry.index].Key.KeyName = FName(entry.name)
-            rebuild(entry.context)
+
+local function copyProjection(component, camera)
+    component.FieldOfView = camera:GetFOVAngle()
+    local ok, err = pcall(function()
+        local view = camera.CameraCachePrivate.POV
+        component.AspectRatio = view.AspectRatio
+        component.bConstrainAspectRatio = view.bConstrainAspectRatio
+        component.ProjectionMode = view.ProjectionMode
+        if view.ProjectionMode == 1 then component.OrthoWidth = view.OrthoWidth end
+
+        local settings = StaticFindObject("/Script/Engine.Default__GameUserSettings"):GetGameUserSettings()
+        if valid(settings) and settings.GetVerticalFOV then
+            -- EAspectRatioAxisConstraint: MaintainYFOV = 0, MaintainXFOV = 1.
+            component:SetAspectRatioAxisConstraint(settings:GetVerticalFOV() and 0 or 1)
+            component.bOverrideAspectRatioAxisConstraint = true
         end
-    end
+    end)
+    if not ok then print("Free camera projection warning: " .. tostring(err)) end
+end
+
+local function cleanup(label, fn)
+    local ok, err = pcall(fn)
+    if not ok then print(label .. ": " .. tostring(err)) end
+end
+
+local function reduceCameraLatency(s)
+    cleanup("Free camera mouse smoothing warning", function()
+        local library = StaticFindObject("/Script/Engine.Default__InputSettings")
+        if not valid(library) then return end
+        local settings = library:GetInputSettings()
+        if valid(settings) and settings.bEnableMouseSmoothing == true then
+            s.inputSettings = settings
+            settings.bEnableMouseSmoothing = false
+        end
+    end)
+    cleanup("Free camera DLSS FG warning", function()
+        local library = StaticFindObject("/Script/StreamlineDLSSGBlueprint.Default__StreamlineLibraryDLSSG")
+        if not valid(library) then return end
+        local mode = library:GetDLSSGMode()
+        if type(mode) == "number" and mode ~= 0 then
+            s.fgLibrary, s.fgMode = library, mode
+            library:SetDLSSGMode(0)
+            print("DLSS Frame Generation paused for free camera")
+        end
+    end)
 end
 
 local function stop()
     local s = state
     if not s then return end
-    local restored, restoreError = pcall(function() restoreWheel(s) end)
-    if not restored then print("Wheel restore warning: " .. tostring(restoreError)) end
-    if valid(hud) then hud:SetVisibility(2) end
-    if valid(s.pc) then
-        local target = valid(s.target) and s.target or s.pc.Pawn
-        if valid(target) then s.pc:SetViewTargetWithBlend(target, 0, 0, 0, false) end
-        s.pc:SetIgnoreMoveInput(false)
-        s.pc:SetControlRotation(s.rotation)
-    end
-    if valid(s.actor) then s.actor:K2_DestroyActor() end
     state = nil
     inDebugCamera = false
+    if valid(s.inputSettings) then
+        cleanup("Free camera mouse smoothing restore warning", function()
+            s.inputSettings.bEnableMouseSmoothing = true
+        end)
+    end
+    if valid(s.fgLibrary) then
+        cleanup("Free camera DLSS FG restore warning", function()
+            if s.fgLibrary:GetDLSSGMode() == 0 then
+                s.fgLibrary:SetDLSSGMode(s.fgMode)
+            end
+        end)
+    end
+    if valid(s.subsystem) and valid(s.inputContext) then
+        cleanup("Free camera input restore warning", function()
+            s.subsystem:RemoveMappingContext(s.inputContext, {
+                bForceImmediately=true, bIgnoreAllPressedKeysUntilRelease=true,
+            })
+        end)
+    end
+    if valid(s.pc) then
+        if s.moveIgnored then
+            cleanup("Free camera movement restore warning", function() s.pc:SetIgnoreMoveInput(false) end)
+        end
+        if s.viewChanged then
+            cleanup("Free camera view restore warning", function()
+                local target = valid(s.target) and s.target or s.pc.Pawn
+                if valid(target) then s.pc:SetViewTargetWithBlend(target, 0, 0, 0, false) end
+                s.pc:SetControlRotation(s.rotation)
+            end)
+        end
+    end
+    if valid(s.actor) then
+        cleanup("Free camera actor cleanup warning", function() s.actor:K2_DestroyActor() end)
+    end
+    if valid(hud) then cleanup("Free camera HUD warning", function() hud:SetVisibility(2) end) end
     print("Free camera OFF")
 end
 local function guarded(fn)
@@ -94,8 +165,9 @@ local function tick()
     local dt = math.max(0, math.min(now - s.time, 0.05))
     s.time = now
     if UEHelpers.GetGameplayStatics():IsGamePaused(s.pc) then return end
+    -- Use the game's processed look input, including sensitivity and inversion.
     local r = s.pc:GetControlRotation()
-    local rot = {Pitch=r.Pitch, Yaw=r.Yaw, Roll=0}
+    local rot = {Pitch=r.Pitch, Yaw=r.Yaw, Roll=r.Roll}
     local p = s.actor:K2_GetActorLocation()
     local yaw, pitch = math.rad(rot.Yaw), math.rad(rot.Pitch)
     local f = (key(s.pc,"W") and 1 or 0) - (key(s.pc,"S") and 1 or 0)
@@ -115,6 +187,14 @@ local function tick()
         Z=p.Z+d*(f*math.sin(pitch)+up)
     }, rot, false, {}, true)
 end
+local function updateEveryFrame(session)
+    ExecuteInGameThreadAfterFrames(1, function()
+        if state ~= session then return end
+        guarded(tick)
+        if state == session then updateEveryFrame(session) end
+    end)
+end
+
 local function toggle()
     if state then stop() return end
     local pc = getPlayerController()
@@ -122,35 +202,29 @@ local function toggle()
     local cam = pc.PlayerCameraManager
     local r = cam:GetCameraRotation()
     local rotation = {Pitch=r.Pitch,Yaw=r.Yaw,Roll=r.Roll}
+    local control = pc:GetControlRotation()
+    state = {pc=pc, pawn=pc.Pawn, target=pc:GetViewTarget(),
+        rotation={Pitch=control.Pitch,Yaw=control.Yaw,Roll=control.Roll},
+        time=UEHelpers.GetGameplayStatics():GetRealTimeSeconds(pc)}
     local actor = pc:GetWorld():SpawnActor(StaticFindObject("/Script/Engine.CameraActor"),
         cam:GetCameraLocation(), rotation)
     if not valid(actor) then error("CameraActor spawn failed") end
-    local control = pc:GetControlRotation()
-    state = {pc=pc, pawn=pc.Pawn, actor=actor, target=pc:GetViewTarget(),
-        rotation={Pitch=control.Pitch,Yaw=control.Yaw,Roll=control.Roll},
-        time=UEHelpers.GetGameplayStatics():GetRealTimeSeconds(pc)}
-    actor.CameraComponent.bConstrainAspectRatio = false
-    actor.CameraComponent.FieldOfView = cam:GetFOVAngle()
+    state.actor = actor
+    copyProjection(actor.CameraComponent, cam)
+    captureInput(state)
     pc:SetIgnoreMoveInput(true)
+    state.moveIgnored = true
+    if valid(pc.Character) then pc.Character:StopJumping() end
+    state.viewChanged = true
     pc:SetControlRotation(rotation)
     pc:SetViewTargetWithBlend(actor, 0, 0, 0, false)
-    local ok, err = pcall(function() blockWheel(state) end)
-    if not ok then print("Wheel mapping warning: " .. tostring(err)) end
     local hudOK, hudErr = pcall(updateHud)
     if not hudOK then print("HUD warning: " .. tostring(hudErr)) end
+    reduceCameraLatency(state)
+    updateEveryFrame(state)
     inDebugCamera = true
     print("Free camera ON: WASD, Space up, Shift down, mouse wheel speed; middle mouse exits; left mouse teleports")
 end
--- All engine calls stay on the game thread; no queued tick accumulation.
-LoopAsync(16, function()
-    if not state or queued then return false end
-    queued = true
-    ExecuteInGameThread(function()
-        guarded(tick)
-        queued = false
-    end)
-    return false
-end)
 RegisterKeyBind(Key.MIDDLE_MOUSE_BUTTON, function()
     ExecuteInGameThread(function() guarded(toggle) end)
 end)

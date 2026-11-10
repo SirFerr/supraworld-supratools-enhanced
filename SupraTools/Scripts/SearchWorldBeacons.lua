@@ -24,13 +24,22 @@ function module.update(candidates,limit)
         if i>limit then break end
         local key=entry.target.name
         wanted[key]=true
-        if not pool[key] or not valid(pool[key].actor) then
+        local loc = {X=entry.loc.X, Y=entry.loc.Y, Z=entry.loc.Z+500030}
+        local beacon = pool[key]
+        if beacon and valid(beacon.actor) then
+            local previous = beacon.loc
+            if previous.X ~= loc.X or previous.Y ~= loc.Y or previous.Z ~= loc.Z then
+                if beacon.actor:K2_SetActorLocation(loc, false, {}, true) then
+                    beacon.loc = loc
+                end
+            end
+        else
             local mesh=asset('/Engine/BasicShapes/Cylinder.Cylinder')
             if not valid(mesh) then error('3D beacon cylinder asset unavailable') end
             local actor=world:SpawnActor(StaticFindObject('/Script/Engine.StaticMeshActor'),
-                {X=entry.loc.X,Y=entry.loc.Y,Z=entry.loc.Z+500030},{Pitch=0,Yaw=0,Roll=0})
+                loc,{Pitch=0,Yaw=0,Roll=0})
             if not valid(actor) then error('Could not spawn 3D beacon') end
-            pool[key]={actor=actor}
+            pool[key]={actor=actor,loc=loc}
             actor:SetActorEnableCollision(false)
             actor:SetReplicates(false)
             actor:SetMobility(2)

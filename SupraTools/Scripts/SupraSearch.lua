@@ -240,7 +240,28 @@ end)
 RegisterKeyBind(0x25,{ModifierKey.ALT},function()
     if menuOpen then run(function() tab=tab=="search" and "general" or "search";menu() end) end
 end)
-RegisterKeyBind(Key.B,{ModifierKey.ALT},function() run(function() beamsOn=not beamsOn; save(); scan(); update() end) end)
+RegisterKeyBind(Key.B,{ModifierKey.ALT},function()
+    run(function()
+        beamsOn=not beamsOn
+        save()
+        scan()
+        update()
+        if beamsOn then
+            local pc=UEHelpers.GetPlayerController()
+            if valid(pc) and valid(pc.Pawn) then
+                local loc=pc.Pawn:K2_GetActorLocation()
+                print(string.format("Egg diagnostic player XYZ %.0f %.0f %.0f",loc.X,loc.Y,loc.Z))
+                local hitOK, hit=pcall(getCameraHitObject)
+                if hitOK and valid(hit) then
+                    local nameOK,name=pcall(function() return hit:GetFullName() end)
+                    if nameOK then print("Egg diagnostic crosshair " .. name) end
+                end
+                local ok,err=pcall(rules.logEggMarkers,targets,loc)
+                if not ok then print("Egg diagnostic error",tostring(err)) end
+            end
+        end
+    end)
+end)
 RegisterKeyBind(0x26,{ModifierKey.ALT},function() if menuOpen and tab=="search" then run(function() selection=(selection-2)%(#rules.categories+3)+1; menu() end) end end)
 RegisterKeyBind(0x28,{ModifierKey.ALT},function() if menuOpen and tab=="search" then run(function() selection=selection%(#rules.categories+3)+1; menu() end) end end)
 RegisterKeyBind(0x27,{ModifierKey.ALT},function() if menuOpen and tab=="search" then run(change) end end)
